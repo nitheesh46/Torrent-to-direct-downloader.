@@ -4,8 +4,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Nitheesh Cloud Downloader</title>
-  <!-- Library to parse torrent files client-side without CORS issues -->
-  <script src="https://cdn.jsdelivr.net/npm/parse-torrent@11.0.1/dist/parse-torrent.min.js"></script>
   <style>
     :root {
       --bg-color: #080b11;
@@ -262,6 +260,7 @@
 
   <script>
     let activeMode = 'magnet';
+    const CORS_PROXY = 'https://corsproxy.io/?';
 
     function switchTab(mode) {
       activeMode = mode;
@@ -270,6 +269,90 @@
       
       document.getElementById('magnetGroup').style.display = mode === 'magnet' ? 'block' : 'none';
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
+    }
+
+    // CORS Proxy Fetch Wrapper
+    async function apiFetch(endpoint, options = {}) {
+      const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
+      const proxiedUrl = CORS_PROXY + encodeURIComponent(targetUrl);
+      return fetch(proxiedUrl, options);
+    }
+
+    // Native JS .torrent Bencode Parser (No parseTorrent library needed)
+    async function convertTorrentToMagnet(arrayBuffer) {
+      const uint8 = new Uint8Array(arrayBuffer);
+      let pos = 0;
+
+      function parseStringBytes() {
+        let lenStr = '';
+        while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== ':') {
+          lenStr += String.fromCharCode(uint8[pos]);
+          pos++;
+        }
+        pos++; // skip ':'
+        const len = parseInt(lenStr, 10);
+        const bytes = uint8.subarray(pos, pos + len);
+        pos += len;
+        return bytes;
+      }
+
+      function parseString() {
+        const bytes = parseStringBytes();
+        let str = '';
+        for (let i = 0; i < bytes.length; i++) {
+          str += String.fromCharCode(bytes[i]);
+        }
+        return str;
+      }
+
+      function skipValue() {
+        const char = String.fromCharCode(uint8[pos]);
+        if (char === 'i') {
+          pos++;
+          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') pos++;
+          pos++;
+        } else if (char === 'l' || char === 'd') {
+          pos++;
+          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') {
+            skipValue();
+          }
+          pos++;
+        } else if (char >= '0' && char <= '9') {
+          parseStringBytes();
+        } else {
+          throw new Error("Invalid bencode format.");
+        }
+      }
+
+      if (String.fromCharCode(uint8[pos]) !== 'd') {
+        throw new Error("Invalid .torrent file format.");
+      }
+      pos++; // skip 'd'
+
+      let infoBytes = null;
+
+      while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') {
+        const key = parseString();
+        if (key === 'info') {
+          const infoStart = pos;
+          skipValue();
+          const infoEnd = pos;
+          infoBytes = uint8.subarray(infoStart, infoEnd);
+        } else {
+          skipValue();
+        }
+      }
+
+      if (!infoBytes) {
+        throw new Error("Could not find 'info' dictionary in torrent file.");
+      }
+
+      // SHA-1 Infohash calculation using browser Web Crypto API
+      const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      return `magnet:?xt=urn:btih:${infoHashHex}`;
     }
 
     async function processDownload() {
@@ -302,19 +385,18 @@
             return;
           }
 
-          statusDiv.innerText = 'Parsing torrent file...';
+          statusDiv.innerText = 'Parsing .torrent file locally...';
           const file = fileInput.files[0];
           const arrayBuffer = await file.arrayBuffer();
 
-          // Convert .torrent file to magnet URI locally to prevent CORS errors
-          const parsed = await parseTorrent(new Uint8Array(arrayBuffer));
-          magnetLink = parseTorrent.toMagnetURI(parsed);
+          // Native conversion call
+          magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
-        statusDiv.innerText = 'Adding magnet to server...';
+        statusDiv.innerText = 'Adding magnet link to Real-Debrid...';
 
-        // Add Magnet Link to Real-Debrid API
-        const res = await fetch('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', {
+        // Add Magnet Link
+        const res = await apiFetch('/torrents/addMagnet', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -323,12 +405,14 @@
           body: new URLSearchParams({ 'magnet': magnetLink })
         });
 
-        if (!res.ok) throw new Error('Failed to add magnet link. Please verify your API key.');
+        if (!res.ok) throw new Error('Failed to add magnet link. Please check your API key.');
         const data = await res.json();
         const torrentId = data.id;
 
+        statusDiv.innerText = 'Selecting files...';
+
         // Select All Files
-        await fetch(`https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`, {
+        await apiFetch(`/torrents/selectFiles/${torrentId}`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -337,20 +421,22 @@
           body: new URLSearchParams({ 'files': 'all' })
         });
 
-        statusDiv.innerText = 'Generating high-speed download link...';
+        statusDiv.innerText = 'Fetching download link info...';
 
-        // Fetch Torrent Info
-        const infoRes = await fetch(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, {
+        // Get Torrent Info
+        const infoRes = await apiFetch(`/torrents/info/${torrentId}`, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
         });
         const infoData = await infoRes.json();
 
         if (!infoData.links || infoData.links.length === 0) {
-          throw new Error('Link generation in progress. Please click Convert again in a few seconds.');
+          throw new Error('Real-Debrid is caching the torrent. Click Convert again in a few seconds.');
         }
 
+        statusDiv.innerText = 'Unrestricting high-speed download link...';
+
         // Unrestrict Link
-        const unrestrictRes = await fetch('https://api.real-debrid.com/rest/1.0/unrestrict/link', {
+        const unrestrictRes = await apiFetch('/unrestrict/link', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -362,7 +448,7 @@
         if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
         const unrestrictData = await unrestrictRes.json();
 
-        // Render Direct Link
+        // Render Download Link
         statusDiv.className = 'status success';
         statusDiv.innerText = 'Direct Link Generated Successfully!';
 
