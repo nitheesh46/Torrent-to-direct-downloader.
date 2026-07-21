@@ -1,120 +1,381 @@
-<!-- Import parseTorrent directly as an ES module -->
-<script type="module">
-  import parseTorrent from 'https://esm.sh/parse-torrent@11.0.1';
-
-  let activeMode = 'magnet';
-
-  // Make switchTab available to button onclick handlers
-  window.switchTab = function(mode) {
-    activeMode = mode;
-    document.getElementById('tabMagnet').classList.toggle('active', mode === 'magnet');
-    document.getElementById('tabTorrent').classList.toggle('active', mode === 'torrent');
-    
-    document.getElementById('magnetGroup').style.display = mode === 'magnet' ? 'block' : 'none';
-    document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
-  };
-
-  // Main processing function
-  window.processDownload = async function() {
-    const apiKey = document.getElementById('apiKey').value.trim();
-    const statusDiv = document.getElementById('statusMessage');
-    const resultDiv = document.getElementById('resultContainer');
-
-    if (!apiKey) {
-      alert('Please enter your NITHEESH API KEY!');
-      return;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Nitheesh Cloud Downloader</title>
+  <style>
+    :root {
+      --bg-color: #080b11;
+      --card-bg: rgba(18, 24, 38, 0.85);
+      --border-color: #1e293b;
+      --accent-color: #00d2ff;
+      --accent-gradient: linear-gradient(135deg, #00d2ff 0%, #3a7bd5 100%);
+      --hover-gradient: linear-gradient(135deg, #00b8e6 0%, #2f69be 100%);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --success: #22c55e;
+      --error: #ef4444;
     }
 
-    statusDiv.className = 'status';
-    statusDiv.innerText = 'Processing request...';
-    resultDiv.style.display = 'none';
-
-    try {
-      let magnetLink = '';
-
-      if (activeMode === 'magnet') {
-        magnetLink = document.getElementById('magnetLink').value.trim();
-        if (!magnetLink) {
-          alert('Please enter a Magnet link!');
-          return;
-        }
-      } else {
-        const fileInput = document.getElementById('torrentFile');
-        if (!fileInput.files || fileInput.files.length === 0) {
-          alert('Please select a .torrent file!');
-          return;
-        }
-
-        statusDiv.innerText = 'Parsing torrent file...';
-        const file = fileInput.files[0];
-        const arrayBuffer = await file.arrayBuffer();
-
-        // Parse .torrent file to magnet URI client-side
-        const parsed = await parseTorrent(new Uint8Array(arrayBuffer));
-        magnetLink = parseTorrent.toMagnetURI(parsed);
-      }
-
-      statusDiv.innerText = 'Adding magnet to server...';
-
-      // Add Magnet Link to Real-Debrid API
-      const res = await fetch('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({ 'magnet': magnetLink })
-      });
-
-      if (!res.ok) throw new Error('Failed to add magnet link. Please verify your API key.');
-      const data = await res.json();
-      const torrentId = data.id;
-
-      // Select All Files
-      await fetch(`https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({ 'files': 'all' })
-      });
-
-      statusDiv.innerText = 'Generating high-speed download link...';
-
-      // Fetch Torrent Info
-      const infoRes = await fetch(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` }
-      });
-      const infoData = await infoRes.json();
-
-      if (!infoData.links || infoData.links.length === 0) {
-        throw new Error('Link generation in progress. Please click Convert again in a few seconds.');
-      }
-
-      // Unrestrict Link
-      const unrestrictRes = await fetch('https://api.real-debrid.com/rest/1.0/unrestrict/link', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({ 'link': infoData.links[0] })
-      });
-
-      if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
-      const unrestrictData = await unrestrictRes.json();
-
-      // Render Direct Link
-      statusDiv.className = 'status success';
-      statusDiv.innerText = 'Direct Link Generated Successfully!';
-
-      resultDiv.style.display = 'block';
-      resultDiv.innerHTML = `<a href="${unrestrictData.download}" target="_blank" rel="noopener noreferrer">🚀 Download File (${(unrestrictData.filesize / (1024 * 1024)).toFixed(2)} MB)</a>`;
-
-    } catch (err) {
-      statusDiv.className = 'status error';
-      statusDiv.innerText = `Error: ${err.message}`;
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
     }
-  };
-</script>
+
+    body {
+      background: radial-gradient(circle at top, #0f172a 0%, var(--bg-color) 100%);
+      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 20px;
+    }
+
+    .container {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 36px;
+      width: 100%;
+      max-width: 620px;
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7), 0 0 20px rgba(0, 210, 255, 0.1);
+    }
+
+    .header {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+
+    .header h1 {
+      font-size: 28px;
+      font-weight: 800;
+      background: var(--accent-gradient);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 6px;
+      letter-spacing: -0.5px;
+    }
+
+    .badge {
+      display: inline-block;
+      background: rgba(0, 210, 255, 0.1);
+      color: var(--accent-color);
+      border: 1px solid rgba(0, 210, 255, 0.3);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 4px 12px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    input[type="text"],
+    textarea,
+    input[type="file"] {
+      width: 100%;
+      padding: 12px 14px;
+      background: #0b0f19;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      color: var(--text-main);
+      font-size: 14px;
+      font-family: inherit;
+      transition: all 0.2s ease;
+    }
+
+    input[type="text"]:focus,
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent-color);
+      box-shadow: 0 0 10px rgba(0, 210, 255, 0.2);
+    }
+
+    .tabs {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .tab-btn {
+      flex: 1;
+      padding: 10px;
+      background: #0b0f19;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn.active {
+      background: rgba(0, 210, 255, 0.15);
+      border-color: var(--accent-color);
+      color: var(--accent-color);
+    }
+
+    .file-dropzone {
+      border: 2px dashed var(--border-color);
+      padding: 20px;
+      text-align: center;
+      border-radius: 8px;
+      background: #0b0f19;
+      cursor: pointer;
+      transition: border-color 0.2s ease;
+    }
+
+    .file-dropzone:hover {
+      border-color: var(--accent-color);
+    }
+
+    button.btn-convert {
+      width: 100%;
+      padding: 14px;
+      background: var(--accent-gradient);
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.1s ease, box-shadow 0.2s ease;
+      box-shadow: 0 4px 15px rgba(0, 210, 255, 0.3);
+      margin-top: 10px;
+    }
+
+    button.btn-convert:hover {
+      background: var(--hover-gradient);
+      box-shadow: 0 6px 20px rgba(0, 210, 255, 0.4);
+    }
+
+    button.btn-convert:active {
+      transform: scale(0.99);
+    }
+
+    .status {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+
+    .error { color: var(--error); }
+    .success { color: var(--success); }
+
+    .result-box {
+      margin-top: 20px;
+      padding: 16px;
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.4);
+      border-radius: 8px;
+      text-align: center;
+      display: none;
+    }
+
+    .result-box a {
+      color: var(--success);
+      font-weight: 700;
+      text-decoration: none;
+      font-size: 15px;
+    }
+
+    .result-box a:hover {
+      text-decoration: underline;
+    }
+
+    .footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .footer strong {
+      color: var(--text-main);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <div class="header">
+      <h1>Nitheesh Cloud Downloader</h1>
+      <span class="badge">⚡ High Speed Downloader</span>
+    </div>
+
+    <!-- API Key Input -->
+    <div class="form-group">
+      <label for="apiKey">NITHEESH API KEY:</label>
+      <input type="text" id="apiKey" placeholder="Paste your API token here" />
+    </div>
+
+    <!-- Input Mode Switcher -->
+    <div class="tabs">
+      <button class="tab-btn active" id="tabMagnet" onclick="switchTab('magnet')">Magnet Link</button>
+      <button class="tab-btn" id="tabTorrent" onclick="switchTab('torrent')">Torrent File</button>
+    </div>
+
+    <!-- Magnet Input -->
+    <div class="form-group" id="magnetGroup">
+      <label for="magnetLink">Magnet Link:</label>
+      <textarea id="magnetLink" rows="3" placeholder="magnet:?xt=urn:btih:..."></textarea>
+    </div>
+
+    <!-- Torrent File Input -->
+    <div class="form-group" id="torrentGroup" style="display: none;">
+      <label for="torrentFile">Select `.torrent` File:</label>
+      <div class="file-dropzone">
+        <input type="file" id="torrentFile" accept=".torrent" />
+      </div>
+    </div>
+
+    <button class="btn-convert" onclick="processDownload()">Convert to Direct Link</button>
+
+    <div id="statusMessage" class="status"></div>
+    <div id="resultContainer" class="result-box"></div>
+  </div>
+
+  <div class="footer">
+    Developed by <strong>Nitheesh Kumar</strong>
+  </div>
+
+  <script type="module">
+    import parseTorrent from 'https://esm.sh/parse-torrent@11.0.1';
+
+    let activeMode = 'magnet';
+
+    // Global tab switching function
+    window.switchTab = function(mode) {
+      activeMode = mode;
+      document.getElementById('tabMagnet').classList.toggle('active', mode === 'magnet');
+      document.getElementById('tabTorrent').classList.toggle('active', mode === 'torrent');
+      
+      document.getElementById('magnetGroup').style.display = mode === 'magnet' ? 'block' : 'none';
+      document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
+    };
+
+    // Main download processing function
+    window.processDownload = async function() {
+      const apiKey = document.getElementById('apiKey').value.trim();
+      const statusDiv = document.getElementById('statusMessage');
+      const resultDiv = document.getElementById('resultContainer');
+
+      if (!apiKey) {
+        alert('Please enter your NITHEESH API KEY!');
+        return;
+      }
+
+      statusDiv.className = 'status';
+      statusDiv.innerText = 'Processing request...';
+      resultDiv.style.display = 'none';
+
+      try {
+        let magnetLink = '';
+
+        if (activeMode === 'magnet') {
+          magnetLink = document.getElementById('magnetLink').value.trim();
+          if (!magnetLink) {
+            alert('Please enter a Magnet link!');
+            return;
+          }
+        } else {
+          const fileInput = document.getElementById('torrentFile');
+          if (!fileInput.files || fileInput.files.length === 0) {
+            alert('Please select a .torrent file!');
+            return;
+          }
+
+          statusDiv.innerText = 'Parsing torrent file...';
+          const file = fileInput.files[0];
+          const arrayBuffer = await file.arrayBuffer();
+
+          // Convert .torrent file to magnet URI locally
+          const parsed = await parseTorrent(new Uint8Array(arrayBuffer));
+          magnetLink = parseTorrent.toMagnetURI(parsed);
+        }
+
+        statusDiv.innerText = 'Adding magnet to server...';
+
+        // Add Magnet Link to Real-Debrid API
+        const res = await fetch('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: new URLSearchParams({ 'magnet': magnetLink })
+        });
+
+        if (!res.ok) throw new Error('Failed to add magnet link. Please verify your API key.');
+        const data = await res.json();
+        const torrentId = data.id;
+
+        // Select All Files
+        await fetch(`https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: new URLSearchParams({ 'files': 'all' })
+        });
+
+        statusDiv.innerText = 'Generating high-speed download link...';
+
+        // Fetch Torrent Info
+        const infoRes = await fetch(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, {
+          headers: { 'Authorization': `Bearer ${apiKey}` }
+        });
+        const infoData = await infoRes.json();
+
+        if (!infoData.links || infoData.links.length === 0) {
+          throw new Error('Link generation in progress. Please click Convert again in a few seconds.');
+        }
+
+        // Unrestrict Link
+        const unrestrictRes = await fetch('https://api.real-debrid.com/rest/1.0/unrestrict/link', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: new URLSearchParams({ 'link': infoData.links[0] })
+        });
+
+        if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
+        const unrestrictData = await unrestrictRes.json();
+
+        // Render Direct Link
+        statusDiv.className = 'status success';
+        statusDiv.innerText = 'Direct Link Generated Successfully!';
+
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = `<a href="${unrestrictData.download}" target="_blank" rel="noopener noreferrer">🚀 Download File (${(unrestrictData.filesize / (1024 * 1024)).toFixed(2)} MB)</a>`;
+
+      } catch (err) {
+        statusDiv.className = 'status error';
+        statusDiv.innerText = `Error: ${err.message}`;
+      }
+    };
+  </script>
+</body>
+</html>
