@@ -271,14 +271,14 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // CORS Proxy Fetch Wrapper
+    // Proxy helper function to bypass CORS
     async function apiFetch(endpoint, options = {}) {
       const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
       const proxiedUrl = CORS_PROXY + encodeURIComponent(targetUrl);
       return fetch(proxiedUrl, options);
     }
 
-    // Native JS .torrent Bencode Parser (No parseTorrent library needed)
+    // Pure Browser-Native Torrent InfoHash Generator (Zero Third-Party Libraries)
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -347,7 +347,7 @@
         throw new Error("Could not find 'info' dictionary in torrent file.");
       }
 
-      // SHA-1 Infohash calculation using browser Web Crypto API
+      // Calculate SHA-1 Infohash using Web Crypto API
       const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -448,7 +448,7 @@
         if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
         const unrestrictData = await unrestrictRes.json();
 
-        // Render Download Link
+        // Render Direct Link
         statusDiv.className = 'status success';
         statusDiv.innerText = 'Direct Link Generated Successfully!';
 
