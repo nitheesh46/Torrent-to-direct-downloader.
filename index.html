@@ -108,37 +108,6 @@
       box-shadow: 0 0 10px rgba(0, 210, 255, 0.2);
     }
 
-    .toggle-group {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      margin-bottom: 20px;
-      background: rgba(11, 15, 25, 0.6);
-      padding: 14px;
-      border-radius: 8px;
-      border: 1px solid var(--border-color);
-    }
-
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-
-    .checkbox-row input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      cursor: pointer;
-      accent-color: var(--accent-color);
-    }
-
-    .checkbox-row label {
-      margin-bottom: 0;
-      font-size: 13px;
-      cursor: pointer;
-      color: var(--text-main);
-    }
-
     .tabs {
       display: flex;
       gap: 10px;
@@ -209,8 +178,17 @@
       line-height: 1.6;
     }
 
-    .error { color: var(--error); }
-    .success { color: var(--success); }
+    .error { 
+      color: var(--error); 
+      background: rgba(239, 68, 68, 0.1);
+      padding: 12px;
+      border-radius: 8px;
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+    
+    .success { 
+      color: var(--success); 
+    }
 
     .result-box {
       margin-top: 20px;
@@ -265,19 +243,6 @@
       <input type="text" id="apiKey" placeholder="Paste your Real-Debrid API token here" />
     </div>
 
-    <!-- Connection & Proxy Controls -->
-    <div class="toggle-group">
-      <div class="checkbox-row">
-        <input type="checkbox" id="useDirect" />
-        <label for="useDirect">Direct Connection Mode (Requires 'Allow CORS' Browser Extension)</label>
-      </div>
-
-      <div class="form-group" style="margin-bottom: 0; margin-top: 6px;">
-        <label for="customProxyUrl" style="font-size: 12px;">Custom Cloudflare Proxy URL (Optional):</label>
-        <input type="text" id="customProxyUrl" placeholder="https://your-worker.workers.dev" style="padding: 8px; font-size: 12px;" />
-      </div>
-    </div>
-
     <!-- Input Mode Switcher -->
     <div class="tabs">
       <button class="tab-btn active" id="tabMagnet" onclick="switchTab('magnet')">Magnet Link</button>
@@ -311,12 +276,9 @@
   <script>
     let activeMode = 'magnet';
 
-    // Auto-restore saved preferences on page load
     document.addEventListener('DOMContentLoaded', () => {
       const savedKey = localStorage.getItem('nitheesh_rd_api_key');
-      const savedProxy = localStorage.getItem('nitheesh_rd_custom_proxy');
       if (savedKey) document.getElementById('apiKey').value = savedKey;
-      if (savedProxy) document.getElementById('customProxyUrl').value = savedProxy;
     });
 
     function switchTab(mode) {
@@ -328,61 +290,48 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // Public CORS proxies array for fallback
-    const PUBLIC_PROXIES = [
+    // List of CORS Proxy Endpoints
+    const PROXY_PROVIDERS = [
       url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
       url => `https://proxy.corsfix.com/?${encodeURIComponent(url)}`,
-      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+      url => `https://thingproxy.freeboard.io/fetch/${url}`,
+      url => url // Direct request fallback
     ];
 
-    // Core Fetch Handler supporting Direct, Custom Proxy, and Public Proxy Fallbacks
+    // Resilient Auto-Failover Fetch Function
     async function apiFetch(endpoint, options = {}) {
       const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
-      const isDirect = document.getElementById('useDirect').checked;
-      const customProxy = document.getElementById('customProxyUrl').value.trim();
-
-      // 1. Direct Fetch Mode (For CORS Extension Users)
-      if (isDirect) {
-        const res = await fetch(targetUrl, options);
-        if (res.status === 401) throw new Error("Invalid API Key! Please check your NITHEESH API KEY.");
-        if (res.ok) return res;
-        const errJson = await res.json().catch(() => null);
-        throw new Error(errJson?.error || `HTTP Error ${res.status}`);
-      }
-
-      // 2. Custom Cloudflare Worker Proxy Mode
-      if (customProxy) {
-        const cleanProxyBase = customProxy.replace(/\/+$/, '');
-        const proxiedUrl = cleanProxyBase + endpoint;
-        const res = await fetch(proxiedUrl, options);
-        if (res.status === 401) throw new Error("Invalid API Key! Please check your NITHEESH API KEY.");
-        if (res.ok) return res;
-        const errJson = await res.json().catch(() => null);
-        throw new Error(errJson?.error || `HTTP Error ${res.status}`);
-      }
-
-      // 3. Automatic Rotation across Public CORS Proxies
       let lastError = null;
-      for (const getProxyUrl of PUBLIC_PROXIES) {
+
+      for (const getProxyUrl of PROXY_PROVIDERS) {
         try {
           const proxiedUrl = getProxyUrl(targetUrl);
           const res = await fetch(proxiedUrl, options);
-          
-          if (res.status === 401) throw new Error("Invalid API Key! Please check your NITHEESH API KEY.");
-          if (res.ok) return res;
+
+          if (res.status === 401) {
+            throw new Error("Invalid API Key! Please check your NITHEESH API KEY.");
+          }
+
+          if (res.ok) {
+            return res;
+          }
 
           const errJson = await res.json().catch(() => null);
-          if (errJson && errJson.error) throw new Error(`Real-Debrid: ${errJson.error}`);
+          if (errJson && errJson.error) {
+            throw new Error(`Real-Debrid: ${errJson.error}`);
+          }
         } catch (err) {
-          if (err.message.includes("Invalid API Key") || err.message.includes("Real-Debrid:")) throw err;
+          if (err.message.includes("Invalid API Key") || err.message.includes("Real-Debrid:")) {
+            throw err;
+          }
           lastError = err;
         }
       }
 
-      throw new Error(`Network Error (Failed to fetch). Turn ON a 'Allow CORS' browser extension and check 'Direct Connection Mode', or deploy a free Cloudflare Worker proxy.`);
+      throw new Error(`Connection Error: ${lastError?.message || 'Failed to fetch'}. Please check your internet connection.`);
     }
 
-    // Pure JS Torrent Bencode Parser (100% Dependency-Free)
+    // Pure Native JS Torrent Bencode Parser
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -445,7 +394,6 @@
 
       if (!infoBytes) throw new Error("Could not find 'info' metadata in torrent file.");
 
-      // SHA-1 calculation via Web Crypto API
       const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -455,7 +403,6 @@
 
     async function processDownload() {
       const apiKey = document.getElementById('apiKey').value.trim();
-      const customProxy = document.getElementById('customProxyUrl').value.trim();
       const statusDiv = document.getElementById('statusMessage');
       const resultDiv = document.getElementById('resultContainer');
 
@@ -464,9 +411,7 @@
         return;
       }
 
-      // Save user inputs
       localStorage.setItem('nitheesh_rd_api_key', apiKey);
-      localStorage.setItem('nitheesh_rd_custom_proxy', customProxy);
 
       statusDiv.className = 'status';
       statusDiv.innerText = 'Processing request...';
@@ -494,7 +439,7 @@
           magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
-        statusDiv.innerText = '1/4: Adding magnet link...';
+        statusDiv.innerText = '1/4: Adding magnet to Real-Debrid...';
 
         const addRes = await apiFetch('/torrents/addMagnet', {
           method: 'POST',
@@ -525,7 +470,6 @@
         let attempts = 0;
         const maxAttempts = 15;
 
-        // Poll until file links are ready
         while (attempts < maxAttempts) {
           attempts++;
           statusDiv.innerText = `3/4: Waiting for server caching (Attempt ${attempts}/${maxAttempts})...`;
@@ -544,7 +488,7 @@
         }
 
         if (!unrestrictedSourceLink) {
-          throw new Error('Real-Debrid file processing timed out. Click "Convert" again to retry.');
+          throw new Error('Real-Debrid file processing timed out. Click "Convert to Direct Link" again to retry.');
         }
 
         statusDiv.innerText = '4/4: Generating high-speed download link...';
