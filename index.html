@@ -270,7 +270,7 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // Native JS function to convert .torrent binary data to Magnet URI
+    // Convert .torrent ArrayBuffer to Magnet URI using native JS & Web Crypto API
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -290,7 +290,11 @@
 
       function parseString() {
         const bytes = parseStringBytes();
-        return new TextDecoder().decode(bytes);
+        let str = '';
+        for (let i = 0; i < bytes.length; i++) {
+          str += String.fromCharCode(bytes[i]);
+        }
+        return str;
       }
 
       function skipValue() {
@@ -335,7 +339,7 @@
         throw new Error("Could not find 'info' dictionary in torrent file.");
       }
 
-      // Calculate SHA-1 infohash using browser's Web Crypto API
+      // Calculate SHA-1 infohash via browser's Web Crypto API
       const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -377,7 +381,7 @@
           const file = fileInput.files[0];
           const arrayBuffer = await file.arrayBuffer();
 
-          // Native conversion from .torrent arrayBuffer to Magnet URI
+          // Native conversion without TextDecoder parameter mismatch
           magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
