@@ -192,14 +192,20 @@
     }
 
     .result-box a {
-      color: var(--success);
-      font-weight: 700;
+      display: inline-block;
+      margin-top: 8px;
+      padding: 10px 18px;
+      background: var(--success);
+      color: #080b11;
+      font-weight: 800;
+      border-radius: 6px;
       text-decoration: none;
       font-size: 15px;
+      transition: opacity 0.2s;
     }
 
     .result-box a:hover {
-      text-decoration: underline;
+      opacity: 0.9;
     }
 
     .footer {
@@ -225,7 +231,7 @@
     <!-- API Key Input -->
     <div class="form-group">
       <label for="apiKey">NITHEESH API KEY:</label>
-      <input type="text" id="apiKey" placeholder="Paste your API token here" />
+      <input type="text" id="apiKey" placeholder="Paste your Real-Debrid API token here" />
     </div>
 
     <!-- Input Mode Switcher -->
@@ -260,7 +266,14 @@
 
   <script>
     let activeMode = 'magnet';
-    const CORS_PROXY = 'https://corsproxy.io/?';
+
+    // Auto-load saved API Key on startup
+    document.addEventListener('DOMContentLoaded', () => {
+      const savedKey = localStorage.getItem('nitheesh_rd_api_key');
+      if (savedKey) {
+        document.getElementById('apiKey').value = savedKey;
+      }
+    });
 
     function switchTab(mode) {
       activeMode = mode;
@@ -271,14 +284,47 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // Proxy helper function to bypass CORS
+    // Backup CORS Proxy Array for high availability
+    const PROXIES = [
+      url => `https://proxy.corsfix.com/?${encodeURIComponent(url)}`,
+      url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+      url => url // Direct request fallback
+    ];
+
+    // Resilient API Fetch Wrapper with Automatic Proxy Rotation
     async function apiFetch(endpoint, options = {}) {
       const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
-      const proxiedUrl = CORS_PROXY + encodeURIComponent(targetUrl);
-      return fetch(proxiedUrl, options);
+      let lastError = null;
+
+      for (const getProxyUrl of PROXIES) {
+        try {
+          const proxiedUrl = getProxyUrl(targetUrl);
+          const res = await fetch(proxiedUrl, options);
+          
+          if (res.status === 401) {
+            throw new Error("Invalid API Key! Please verify your NITHEESH API KEY.");
+          }
+
+          if (res.ok) {
+            return res;
+          }
+
+          const errJson = await res.json().catch(() => null);
+          if (errJson && errJson.error) {
+            throw new Error(`Real-Debrid: ${errJson.error}`);
+          }
+        } catch (err) {
+          if (err.message.includes("Invalid API Key") || err.message.includes("Real-Debrid:")) {
+            throw err;
+          }
+          lastError = err;
+        }
+      }
+
+      throw new Error(`Network Error (${lastError?.message || 'Failed to fetch'}). Please check your internet connection.`);
     }
 
-    // Pure Browser-Native Torrent InfoHash Generator (Zero Third-Party Libraries)
+    // Pure Native JS .torrent Bencode Parser
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -291,6 +337,7 @@
         }
         pos++; // skip ':'
         const len = parseInt(lenStr, 10);
+        if (isNaN(len) || len < 0) throw new Error("Invalid string length in torrent file.");
         const bytes = uint8.subarray(pos, pos + len);
         pos += len;
         return bytes;
@@ -306,6 +353,7 @@
       }
 
       function skipValue() {
+        if (pos >= uint8.length) return;
         const char = String.fromCharCode(uint8[pos]);
         if (char === 'i') {
           pos++;
@@ -344,7 +392,7 @@
       }
 
       if (!infoBytes) {
-        throw new Error("Could not find 'info' dictionary in torrent file.");
+        throw new Error("Could not find 'info' metadata in torrent file.");
       }
 
       // Calculate SHA-1 Infohash using Web Crypto API
@@ -364,6 +412,9 @@
         alert('Please enter your NITHEESH API KEY!');
         return;
       }
+
+      // Save API Key locally
+      localStorage.setItem('nitheesh_rd_api_key', apiKey);
 
       statusDiv.className = 'status';
       statusDiv.innerText = 'Processing request...';
@@ -388,15 +439,13 @@
           statusDiv.innerText = 'Parsing .torrent file locally...';
           const file = fileInput.files[0];
           const arrayBuffer = await file.arrayBuffer();
-
-          // Native conversion call
           magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
-        statusDiv.innerText = 'Adding magnet link to Real-Debrid...';
+        statusDiv.innerText = '1/4: Adding magnet to Real-Debrid...';
 
-        // Add Magnet Link
-        const res = await apiFetch('/torrents/addMagnet', {
+        // Step 1: Add Magnet Link
+        const addRes = await apiFetch('/torrents/addMagnet', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -405,13 +454,12 @@
           body: new URLSearchParams({ 'magnet': magnetLink })
         });
 
-        if (!res.ok) throw new Error('Failed to add magnet link. Please check your API key.');
-        const data = await res.json();
-        const torrentId = data.id;
+        const addData = await addRes.json();
+        const torrentId = addData.id;
 
-        statusDiv.innerText = 'Selecting files...';
+        statusDiv.innerText = '2/4: Selecting all files...';
 
-        // Select All Files
+        // Step 2: Select Files
         await apiFetch(`/torrents/selectFiles/${torrentId}`, {
           method: 'POST',
           headers: {
@@ -421,43 +469,66 @@
           body: new URLSearchParams({ 'files': 'all' })
         });
 
-        statusDiv.innerText = 'Fetching download link info...';
+        statusDiv.innerText = '3/4: Processing torrent on server...';
 
-        // Get Torrent Info
-        const infoRes = await apiFetch(`/torrents/info/${torrentId}`, {
-          headers: { 'Authorization': `Bearer ${apiKey}` }
-        });
-        const infoData = await infoRes.json();
+        // Step 3: Poll Info endpoint until files are ready (up to 15 attempts / 30 secs)
+        let unrestrictedSourceLink = null;
+        let attempts = 0;
+        const maxAttempts = 15;
 
-        if (!infoData.links || infoData.links.length === 0) {
-          throw new Error('Real-Debrid is caching the torrent. Click Convert again in a few seconds.');
+        while (attempts < maxAttempts) {
+          attempts++;
+          statusDiv.innerText = `3/4: Waiting for Real-Debrid processing (Attempt ${attempts}/${maxAttempts})...`;
+
+          const infoRes = await apiFetch(`/torrents/info/${torrentId}`, {
+            headers: { 'Authorization': `Bearer ${apiKey}` }
+          });
+          const infoData = await infoRes.json();
+
+          if (infoData.links && infoData.links.length > 0) {
+            unrestrictedSourceLink = infoData.links[0];
+            break;
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
 
-        statusDiv.innerText = 'Unrestricting high-speed download link...';
+        if (!unrestrictedSourceLink) {
+          throw new Error('Real-Debrid processing timed out. Click "Convert" again to retry.');
+        }
 
-        // Unrestrict Link
+        statusDiv.innerText = '4/4: Generating high-speed download link...';
+
+        // Step 4: Unrestrict Download Link
         const unrestrictRes = await apiFetch('/unrestrict/link', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/x-www-form-urlencoded'
           },
-          body: new URLSearchParams({ 'link': infoData.links[0] })
+          body: new URLSearchParams({ 'link': unrestrictedSourceLink })
         });
 
-        if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
         const unrestrictData = await unrestrictRes.json();
 
-        // Render Direct Link
+        // Render Final Direct Download Link
         statusDiv.className = 'status success';
-        statusDiv.innerText = 'Direct Link Generated Successfully!';
+        statusDiv.innerText = '✨ Direct Link Generated Successfully!';
 
+        const fileSizeMB = (unrestrictData.filesize / (1024 * 1024)).toFixed(2);
         resultDiv.style.display = 'block';
-        resultDiv.innerHTML = `<a href="${unrestrictData.download}" target="_blank" rel="noopener noreferrer">🚀 Download File (${(unrestrictData.filesize / (1024 * 1024)).toFixed(2)} MB)</a>`;
+        resultDiv.innerHTML = `
+          <div style="margin-bottom: 8px; font-weight: 600; color: #f1f5f9; text-align: left; word-break: break-all;">
+            📄 ${unrestrictData.filename || 'Downloaded File'}
+          </div>
+          <a href="${unrestrictData.download}" target="_blank" rel="noopener noreferrer">
+            🚀 Download Direct Link (${fileSizeMB} MB)
+          </a>
+        `;
 
       } catch (err) {
         statusDiv.className = 'status error';
-        statusDiv.innerText = `Error: ${err.message}`;
+        statusDiv.innerText = `❌ ${err.message}`;
       }
     }
   </script>
