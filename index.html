@@ -260,6 +260,7 @@
 
   <script>
     let activeMode = 'magnet';
+    const CORS_PROXY = 'https://corsproxy.io/?';
 
     function switchTab(mode) {
       activeMode = mode;
@@ -270,7 +271,14 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // Convert .torrent ArrayBuffer to Magnet URI using native JS & Web Crypto API
+    // Proxy helper function to bypass CORS
+    async function apiFetch(endpoint, options = {}) {
+      const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
+      const proxiedUrl = CORS_PROXY + encodeURIComponent(targetUrl);
+      return fetch(proxiedUrl, options);
+    }
+
+    // Native JS .torrent parser
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -339,7 +347,7 @@
         throw new Error("Could not find 'info' dictionary in torrent file.");
       }
 
-      // Calculate SHA-1 infohash via browser's Web Crypto API
+      // SHA-1 via Web Crypto API
       const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -381,14 +389,13 @@
           const file = fileInput.files[0];
           const arrayBuffer = await file.arrayBuffer();
 
-          // Native conversion without TextDecoder parameter mismatch
           magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
-        statusDiv.innerText = 'Adding magnet to server...';
+        statusDiv.innerText = 'Adding magnet link to Real-Debrid...';
 
-        // Add Magnet Link to Real-Debrid API
-        const res = await fetch('https://api.real-debrid.com/rest/1.0/torrents/addMagnet', {
+        // Add Magnet Link
+        const res = await apiFetch('/torrents/addMagnet', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -397,12 +404,14 @@
           body: new URLSearchParams({ 'magnet': magnetLink })
         });
 
-        if (!res.ok) throw new Error('Failed to add magnet link. Please verify your API key.');
+        if (!res.ok) throw new Error('Failed to add magnet link. Please check your API key.');
         const data = await res.json();
         const torrentId = data.id;
 
+        statusDiv.innerText = 'Selecting files...';
+
         // Select All Files
-        await fetch(`https://api.real-debrid.com/rest/1.0/torrents/selectFiles/${torrentId}`, {
+        await apiFetch(`/torrents/selectFiles/${torrentId}`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -411,20 +420,22 @@
           body: new URLSearchParams({ 'files': 'all' })
         });
 
-        statusDiv.innerText = 'Generating high-speed download link...';
+        statusDiv.innerText = 'Fetching download link info...';
 
-        // Fetch Torrent Info
-        const infoRes = await fetch(`https://api.real-debrid.com/rest/1.0/torrents/info/${torrentId}`, {
+        // Get Torrent Info
+        const infoRes = await apiFetch(`/torrents/info/${torrentId}`, {
           headers: { 'Authorization': `Bearer ${apiKey}` }
         });
         const infoData = await infoRes.json();
 
         if (!infoData.links || infoData.links.length === 0) {
-          throw new Error('Link generation in progress. Please click Convert again in a few seconds.');
+          throw new Error('Real-Debrid is caching the torrent. Click Convert again in a few seconds.');
         }
 
+        statusDiv.innerText = 'Unrestricting high-speed download link...';
+
         // Unrestrict Link
-        const unrestrictRes = await fetch('https://api.real-debrid.com/rest/1.0/unrestrict/link', {
+        const unrestrictRes = await apiFetch('/unrestrict/link', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${apiKey}`,
@@ -436,7 +447,7 @@
         if (!unrestrictRes.ok) throw new Error('Failed to unrestrict download link.');
         const unrestrictData = await unrestrictRes.json();
 
-        // Render Direct Link
+        // Render Download Link
         statusDiv.className = 'status success';
         statusDiv.innerText = 'Direct Link Generated Successfully!';
 
