@@ -108,6 +108,31 @@
       box-shadow: 0 0 10px rgba(0, 210, 255, 0.2);
     }
 
+    .toggle-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      background: rgba(11, 15, 25, 0.6);
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--border-color);
+    }
+
+    .toggle-group input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      cursor: pointer;
+      accent-color: var(--accent-color);
+    }
+
+    .toggle-group label {
+      margin-bottom: 0;
+      font-size: 13px;
+      cursor: pointer;
+      color: var(--text-main);
+    }
+
     .tabs {
       display: flex;
       gap: 10px;
@@ -175,7 +200,7 @@
       margin-top: 20px;
       text-align: center;
       font-size: 14px;
-      line-height: 1.5;
+      line-height: 1.6;
     }
 
     .error { color: var(--error); }
@@ -201,11 +226,6 @@
       border-radius: 6px;
       text-decoration: none;
       font-size: 15px;
-      transition: opacity 0.2s;
-    }
-
-    .result-box a:hover {
-      opacity: 0.9;
     }
 
     .footer {
@@ -232,6 +252,12 @@
     <div class="form-group">
       <label for="apiKey">NITHEESH API KEY:</label>
       <input type="text" id="apiKey" placeholder="Paste your Real-Debrid API token here" />
+    </div>
+
+    <!-- Direct Mode Toggle -->
+    <div class="toggle-group">
+      <input type="checkbox" id="useDirect" />
+      <label for="useDirect">Direct Connection Mode (Enable if using a CORS Browser Extension or Local Server)</label>
     </div>
 
     <!-- Input Mode Switcher -->
@@ -267,12 +293,9 @@
   <script>
     let activeMode = 'magnet';
 
-    // Auto-load saved API Key on startup
     document.addEventListener('DOMContentLoaded', () => {
       const savedKey = localStorage.getItem('nitheesh_rd_api_key');
-      if (savedKey) {
-        document.getElementById('apiKey').value = savedKey;
-      }
+      if (savedKey) document.getElementById('apiKey').value = savedKey;
     });
 
     function switchTab(mode) {
@@ -284,16 +307,27 @@
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
     }
 
-    // Backup CORS Proxy Array for high availability
+    // Proxy endpoints array
     const PROXIES = [
-      url => `https://proxy.corsfix.com/?${encodeURIComponent(url)}`,
       url => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-      url => url // Direct request fallback
+      url => `https://proxy.corsfix.com/?${encodeURIComponent(url)}`,
+      url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
     ];
 
-    // Resilient API Fetch Wrapper with Automatic Proxy Rotation
     async function apiFetch(endpoint, options = {}) {
       const targetUrl = 'https://api.real-debrid.com/rest/1.0' + endpoint;
+      const isDirect = document.getElementById('useDirect').checked;
+
+      // 1. Direct Fetch mode
+      if (isDirect) {
+        const res = await fetch(targetUrl, options);
+        if (res.status === 401) throw new Error("Invalid API Key! Check your NITHEESH API KEY.");
+        if (res.ok) return res;
+        const errJson = await res.json().catch(() => null);
+        throw new Error(errJson?.error || `HTTP Error ${res.status}`);
+      }
+
+      // 2. Proxy Fallback Loop
       let lastError = null;
 
       for (const getProxyUrl of PROXIES) {
@@ -301,30 +335,22 @@
           const proxiedUrl = getProxyUrl(targetUrl);
           const res = await fetch(proxiedUrl, options);
           
-          if (res.status === 401) {
-            throw new Error("Invalid API Key! Please verify your NITHEESH API KEY.");
-          }
+          if (res.status === 401) throw new Error("Invalid API Key! Check your NITHEESH API KEY.");
 
-          if (res.ok) {
-            return res;
-          }
+          if (res.ok) return res;
 
           const errJson = await res.json().catch(() => null);
-          if (errJson && errJson.error) {
-            throw new Error(`Real-Debrid: ${errJson.error}`);
-          }
+          if (errJson && errJson.error) throw new Error(`Real-Debrid: ${errJson.error}`);
         } catch (err) {
-          if (err.message.includes("Invalid API Key") || err.message.includes("Real-Debrid:")) {
-            throw err;
-          }
+          if (err.message.includes("Invalid API Key") || err.message.includes("Real-Debrid:")) throw err;
           lastError = err;
         }
       }
 
-      throw new Error(`Network Error (${lastError?.message || 'Failed to fetch'}). Please check your internet connection.`);
+      throw new Error(`Network Error. If you have an AdBlocker or Brave Shields active, please turn it off, OR install a 'Allow CORS' browser extension and check 'Direct Connection Mode'.`);
     }
 
-    // Pure Native JS .torrent Bencode Parser
+    // Native JS .torrent Parser
     async function convertTorrentToMagnet(arrayBuffer) {
       const uint8 = new Uint8Array(arrayBuffer);
       let pos = 0;
@@ -335,7 +361,7 @@
           lenStr += String.fromCharCode(uint8[pos]);
           pos++;
         }
-        pos++; // skip ':'
+        pos++;
         const len = parseInt(lenStr, 10);
         if (isNaN(len) || len < 0) throw new Error("Invalid string length in torrent file.");
         const bytes = uint8.subarray(pos, pos + len);
@@ -346,9 +372,7 @@
       function parseString() {
         const bytes = parseStringBytes();
         let str = '';
-        for (let i = 0; i < bytes.length; i++) {
-          str += String.fromCharCode(bytes[i]);
-        }
+        for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
         return str;
       }
 
@@ -361,9 +385,7 @@
           pos++;
         } else if (char === 'l' || char === 'd') {
           pos++;
-          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') {
-            skipValue();
-          }
+          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') skipValue();
           pos++;
         } else if (char >= '0' && char <= '9') {
           parseStringBytes();
@@ -372,10 +394,8 @@
         }
       }
 
-      if (String.fromCharCode(uint8[pos]) !== 'd') {
-        throw new Error("Invalid .torrent file format.");
-      }
-      pos++; // skip 'd'
+      if (String.fromCharCode(uint8[pos]) !== 'd') throw new Error("Invalid .torrent file format.");
+      pos++;
 
       let infoBytes = null;
 
@@ -391,11 +411,8 @@
         }
       }
 
-      if (!infoBytes) {
-        throw new Error("Could not find 'info' metadata in torrent file.");
-      }
+      if (!infoBytes) throw new Error("Could not find 'info' metadata in torrent file.");
 
-      // Calculate SHA-1 Infohash using Web Crypto API
       const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
       const hashArray = Array.from(new Uint8Array(hashBuffer));
       const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
@@ -413,7 +430,6 @@
         return;
       }
 
-      // Save API Key locally
       localStorage.setItem('nitheesh_rd_api_key', apiKey);
 
       statusDiv.className = 'status';
@@ -444,7 +460,6 @@
 
         statusDiv.innerText = '1/4: Adding magnet to Real-Debrid...';
 
-        // Step 1: Add Magnet Link
         const addRes = await apiFetch('/torrents/addMagnet', {
           method: 'POST',
           headers: {
@@ -459,7 +474,6 @@
 
         statusDiv.innerText = '2/4: Selecting all files...';
 
-        // Step 2: Select Files
         await apiFetch(`/torrents/selectFiles/${torrentId}`, {
           method: 'POST',
           headers: {
@@ -471,7 +485,6 @@
 
         statusDiv.innerText = '3/4: Processing torrent on server...';
 
-        // Step 3: Poll Info endpoint until files are ready (up to 15 attempts / 30 secs)
         let unrestrictedSourceLink = null;
         let attempts = 0;
         const maxAttempts = 15;
@@ -499,7 +512,6 @@
 
         statusDiv.innerText = '4/4: Generating high-speed download link...';
 
-        // Step 4: Unrestrict Download Link
         const unrestrictRes = await apiFetch('/unrestrict/link', {
           method: 'POST',
           headers: {
@@ -511,7 +523,6 @@
 
         const unrestrictData = await unrestrictRes.json();
 
-        // Render Final Direct Download Link
         statusDiv.className = 'status success';
         statusDiv.innerText = '✨ Direct Link Generated Successfully!';
 
