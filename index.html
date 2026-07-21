@@ -258,23 +258,92 @@
     Developed by <strong>Nitheesh Kumar</strong>
   </div>
 
-  <script type="module">
-    import parseTorrent from 'https://esm.sh/parse-torrent@11.0.1';
-
+  <script>
     let activeMode = 'magnet';
 
-    // Global tab switching function
-    window.switchTab = function(mode) {
+    function switchTab(mode) {
       activeMode = mode;
       document.getElementById('tabMagnet').classList.toggle('active', mode === 'magnet');
       document.getElementById('tabTorrent').classList.toggle('active', mode === 'torrent');
       
       document.getElementById('magnetGroup').style.display = mode === 'magnet' ? 'block' : 'none';
       document.getElementById('torrentGroup').style.display = mode === 'torrent' ? 'block' : 'none';
-    };
+    }
 
-    // Main download processing function
-    window.processDownload = async function() {
+    // Native JS function to convert .torrent binary data to Magnet URI
+    async function convertTorrentToMagnet(arrayBuffer) {
+      const uint8 = new Uint8Array(arrayBuffer);
+      let pos = 0;
+
+      function parseStringBytes() {
+        let lenStr = '';
+        while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== ':') {
+          lenStr += String.fromCharCode(uint8[pos]);
+          pos++;
+        }
+        pos++; // skip ':'
+        const len = parseInt(lenStr, 10);
+        const bytes = uint8.subarray(pos, pos + len);
+        pos += len;
+        return bytes;
+      }
+
+      function parseString() {
+        const bytes = parseStringBytes();
+        return new TextDecoder().decode(bytes);
+      }
+
+      function skipValue() {
+        const char = String.fromCharCode(uint8[pos]);
+        if (char === 'i') {
+          pos++;
+          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') pos++;
+          pos++;
+        } else if (char === 'l' || char === 'd') {
+          pos++;
+          while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') {
+            skipValue();
+          }
+          pos++;
+        } else if (char >= '0' && char <= '9') {
+          parseStringBytes();
+        } else {
+          throw new Error("Invalid bencode format.");
+        }
+      }
+
+      if (String.fromCharCode(uint8[pos]) !== 'd') {
+        throw new Error("Invalid .torrent file format.");
+      }
+      pos++; // skip 'd'
+
+      let infoBytes = null;
+
+      while (pos < uint8.length && String.fromCharCode(uint8[pos]) !== 'e') {
+        const key = parseString();
+        if (key === 'info') {
+          const infoStart = pos;
+          skipValue();
+          const infoEnd = pos;
+          infoBytes = uint8.subarray(infoStart, infoEnd);
+        } else {
+          skipValue();
+        }
+      }
+
+      if (!infoBytes) {
+        throw new Error("Could not find 'info' dictionary in torrent file.");
+      }
+
+      // Calculate SHA-1 infohash using browser's Web Crypto API
+      const hashBuffer = await crypto.subtle.digest('SHA-1', infoBytes);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const infoHashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+      return `magnet:?xt=urn:btih:${infoHashHex}`;
+    }
+
+    async function processDownload() {
       const apiKey = document.getElementById('apiKey').value.trim();
       const statusDiv = document.getElementById('statusMessage');
       const resultDiv = document.getElementById('resultContainer');
@@ -304,13 +373,12 @@
             return;
           }
 
-          statusDiv.innerText = 'Parsing torrent file...';
+          statusDiv.innerText = 'Parsing .torrent file locally...';
           const file = fileInput.files[0];
           const arrayBuffer = await file.arrayBuffer();
 
-          // Convert .torrent file to magnet URI locally
-          const parsed = await parseTorrent(new Uint8Array(arrayBuffer));
-          magnetLink = parseTorrent.toMagnetURI(parsed);
+          // Native conversion from .torrent arrayBuffer to Magnet URI
+          magnetLink = await convertTorrentToMagnet(arrayBuffer);
         }
 
         statusDiv.innerText = 'Adding magnet to server...';
@@ -375,7 +443,7 @@
         statusDiv.className = 'status error';
         statusDiv.innerText = `Error: ${err.message}`;
       }
-    };
+    }
   </script>
 </body>
 </html>
